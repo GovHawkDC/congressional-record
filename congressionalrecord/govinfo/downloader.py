@@ -8,6 +8,7 @@ import urllib3.contrib.pyopenssl
 #import requests
 from builtins import str
 from builtins import object
+import urllib3
 from urllib3 import PoolManager, Retry, Timeout
 from datetime import datetime, date, timedelta
 from io import BytesIO
@@ -20,12 +21,21 @@ urllib3.contrib.pyopenssl.inject_into_urllib3()
 VERSION = pkg_resources.require("congressionalrecord")[0].version
 
 
+user_agent = {'user-agent':
+              'congressional-record {} (https://github.com/unitedstates/congressional-record)'.format(VERSION)}
+    
 class Downloader(object):
     """
     Chunks through downloads and is ready to pass
     to elasticsearch or yield json.
     """
     def bulkdownload(self, start, parse=True, **kwargs):
+        
+        if 'outpath' not in list(kwargs.keys()):
+            outpath = 'output'
+        else:
+            outpath = kwargs['outpath']
+        
         day = datetime.strptime(start, '%Y-%m-%d')
         if 'end' in list(kwargs.keys()):
             end = kwargs['end']
@@ -34,33 +44,59 @@ class Downloader(object):
         end_day = datetime.strptime(end, '%Y-%m-%d')
         while day <= end_day:
             day_str = datetime.strftime(day, '%Y-%m-%d')
-            extractor = GovInfoExtract(day_str, **kwargs)
-            self.status = extractor.status
-            if self.status == 404:
-                logging.info('bulkdownloader skipping a missing day.')
-            elif parse:
-                dir_str = 'CREC-' + day_str
-                year_str = str(day.year)
-                if 'outpath' not in list(kwargs.keys()):
-                    outpath = 'output'
-                else:
-                    outpath = kwargs['outpath']
-                try:
-                    dir_path = os.path.join(outpath, year_str, dir_str)
-                    crdir = ParseCRDir(dir_path)
-                    for the_file in os.listdir(os.path.join(dir_path, 'html')):
-                        parse_path = os.path.join(dir_path, 'html', the_file)
-                        if any(('-PgD' in parse_path,
-                                'FrontMatter' in parse_path,
-                                '-Pgnull' in parse_path)):
-                            logging.info('Skipping {}'.format(parse_path))
-                        else:
-                            crfile = ParseCRFile(parse_path, crdir)
-                            yield crfile
-                except IOError as e:
-                    logging.warning('{}, skipping.'.format(e))
+            dir_str = 'CREC-' + day_str
+            year_str = str(day.year)
+            dir_path = os.path.join(outpath, year_str, dir_str)
+
+            no_session_file = os.path.join(dir_path, 'NO_SESSION')
+            if not os.path.exists(dir_path):
+                os.makedirs(dir_path)
+                
+                check_url = 'https://www.govinfo.gov/metadata/pkg/CREC-%s/mods.xml'%day_str
+
+                logging.debug('Checking whether session exist via %s' % check_url)
+                r = urllib3.PoolManager(cert_reqs='CERT_REQUIRED', ca_certs=certifi.where()).request('GET', check_url)
+
+                if r.geturl() == 'https://www.govinfo.gov/error':
+                    with open(no_session_file, 'w'):
+                        pass
+                    
+            if os.path.exists(no_session_file):
+                logging.info('%s -- no session that day, skipping!' % no_session_file)
+            
             else:
-                logging.warning('Unexpected condition in bulkdownloader')
+                
+                if kwargs['do_mode'] == 'json':
+                    done_flag_file = os.path.join(dir_path, 'json', 'JSON_PARSING_DONE')
+                
+                if os.path.exists(done_flag_file):
+                    logging.info('JSON already parsed, %s' , done_flag_file)
+                    
+                else:
+                    extractor = GovInfoExtract(day_str, **kwargs)
+                    self.status = extractor.status
+                    if self.status == 404:
+                        logging.info('bulkdownloader skipping a missing day.')
+                    elif parse:
+                        try:
+                            crdir = ParseCRDir(dir_path)
+                            for the_file in os.listdir(os.path.join(dir_path, 'html')):
+                                parse_path = os.path.join(dir_path, 'html', the_file)
+                                if any(('-PgD' in parse_path,
+                                        'FrontMatter' in parse_path,
+                                        '-Pgnull' in parse_path)):
+                                    logging.debug('Skipping {}'.format(parse_path))
+                                else:
+                                    crfile = ParseCRFile(parse_path, crdir)
+                                    yield crfile
+                            with open(done_flag_file, 'w'):
+                                pass
+
+                        except IOError as e:
+                            logging.warning('{}, skipping.'.format(e))
+                    else:
+                        logging.warning('Unexpected condition in bulkdownloader')
+
             day += timedelta(days=1)
 
     def __init__(self, start, **kwargs):
@@ -123,17 +159,16 @@ class Downloader(object):
                                         docs_per_chunk=100):
                 es.bulk(chunk, index=kwargs['index'], doc_type='crdoc')
         elif kwargs['do_mode'] == 'json':
-            # outpath called so often to make it easy to follow
-            # the idea that we're traversing a directory tree
             for crfile in self.bulkdownload(start, **kwargs):
                 filename = os.path.split(crfile.filepath)[-1].split('.')[0] + '.json'
-                outpath = os.path.split(crfile.filepath)[0]
-                outpath = os.path.split(outpath)[0]
-                if 'json' not in os.listdir(outpath):
-                    os.mkdir(os.path.join(outpath, 'json'))
-                outpath = os.path.join(outpath, 'json', filename)
-                with open(outpath, 'w') as out_json:
+                outpath2 = os.path.split(crfile.filepath)[0]
+                outpath3 = os.path.split(outpath2)[0]
+                if 'json' not in os.listdir(outpath3):
+                    os.mkdir(os.path.join(outpath3, 'json'))
+                outpath4 = os.path.join(outpath3, 'json', filename)
+                with open(outpath4, 'w') as out_json:
                     json.dump(crfile.crdoc, out_json)
+
         elif kwargs['do_mode'] == 'yield':
             self.yielded = self.bulkdownload(start, parse=True, **kwargs)
         elif kwargs['do_mode'] == 'noparse':
@@ -145,8 +180,6 @@ class Downloader(object):
 
 class downloadRequest(object):
 
-    user_agent = {'user-agent':
-                  'congressional-record {} (https://github.com/unitedstates/congressional-record)'.format(VERSION)}
     its_today = datetime.strftime(datetime.today(), '%Y-%m-%d %H:%M')
     timeout = Timeout(connect=2.0, read=10.0)
     retry = Retry(total=3, backoff_factor=300)
@@ -159,7 +192,7 @@ class downloadRequest(object):
     def __init__(self, url, filename):
         self.status = False
         try:
-            logging.info('Sending request on {}'.format(self.its_today))
+            logging.debug('Sending request on {}'.format(self.its_today))
             r = self.http.request('GET', url)
             logging.debug('Request headers received with code {}'.format(r.status))
             if r.status == 404:
@@ -233,29 +266,33 @@ class GovInfoExtract(object):
             outpath = 'output'
         else:
             outpath = kwargs['outpath']
-        if not os.path.isdir(outpath):
-            os.makedirs(outpath)
-        abspath = os.path.join(outpath, year, 'CREC-' + day + '.zip')
         extract_to = 'CREC-' + day
-        if year not in os.listdir(outpath):
-            os.mkdir(os.path.join(outpath, year))
-        if extract_to in os.listdir(os.path.join(outpath, year)):
+        extract_dir = os.path.join(outpath, year, extract_to)
+        if not os.path.isdir(extract_dir):
+            os.makedirs(extract_dir)
+        abspath = os.path.join(outpath, year, 'CREC-' + day + '.zip')
+        flag_file = os.path.join(extract_dir, 'ZIP_EXTRACTED')
+        if os.path.exists(flag_file):
             logging.info("{} already exists in extraction tree.".format(
                 extract_to))
             self.status = 'existingFiles'
             return None
-        if extract_to + '.zip' not in os.listdir(os.path.join(outpath, year)):
+        else: # if not os.path.exists(abspath):
+            logging.info("Downloading %s" % extract_to)
             the_dl = GovInfoDL(day, outpath=outpath)
             self.status = the_dl.status
             if self.status is not True:
                 logging.info('No record on this day, not trying to extract')
                 self.status = 'downloadFailure'
                 return None
-        with ZipFile(abspath, 'r') as the_zip: # errors here
-            the_zip.extractall(os.path.join(outpath, year))
-            logging.info('Extracted to {}'.format(os.path.join(outpath,
-                                                                year)))
-            self.status = 'extractedFiles'
-        os.remove(abspath)
-        self.status += 'deletedZip'
+            with ZipFile(abspath, 'r') as the_zip: # errors here
+                the_zip.extractall(os.path.join(outpath, year))
+                logging.info('Extracted to {}'.format(os.path.join(outpath,
+                                                                    year)))
+                self.status = 'extractedFiles'
+            os.remove(abspath)
+            with open(flag_file, 'w'):
+                pass
+
+            self.status += 'deletedZip'
         logging.info('Extractor completed with status {}'.format(self.status))

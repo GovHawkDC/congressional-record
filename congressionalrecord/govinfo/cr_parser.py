@@ -140,9 +140,14 @@ class ParseCRFile(object):
         mbrs = self.doc_ref.find_all('congmember')
         if mbrs:
             for mbr in mbrs:
-                self.speakers[mbr.find('name',
-                                       {'type':'parsed'}).string] = \
-                                       self.people_helper(mbr)
+                parsed_name = mbr.find('name', {'type':'parsed'})
+                if not parsed_name:
+                    # Otherwise this fails on CREC-2019-05-14-pt1-PgH3762.htm, Torres Small, Xochitl
+                    parsed_name = mbr.find('name', {'type':'authority-lnf'})
+                    
+                key_name = parsed_name.string if parsed_name else 'ERROR_PARSING'
+                    
+                self.speakers[key_name] = self.people_helper(mbr)
     
     def find_related_bills(self):
         related_bills = self.doc_ref.find_all('bill')
