@@ -12,6 +12,18 @@ From the repository root, type ``python -m congressionalrecord.cli -h`` for inst
 
 This software is released as-is under the BSD3 License, with no warranty of any kind.
 
+# Docker
+
+This can be built and run from docker:
+
+```
+docker build -t congressional-record .
+docker run congressional-record -h
+
+# download files, and map the output to local
+docker run  -v `pwd`/output:/app/output congressional-record "2022-02-09" "2022-02-09" json
+```
+
 # installation
 
 In Python 3 using `venv` for e.g.:

@@ -18,6 +18,8 @@ setup(
         'requests[security]',
         'PyYAML >= 3.11',
         'unicodecsv',
+        'psycopg2-binary',
+        'pyOpenSSL',
         'future'
         ],
         zip_safe=False
